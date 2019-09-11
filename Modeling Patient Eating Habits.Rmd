@@ -1,0 +1,165 @@
+---
+title: "Modeling Patient Eating Habits"
+author: "Michael Lee"
+date: "May 14, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+The following de-identified data comes from NYU Langone's patient database. 
+
+Each patient in our dataset has answered a nine question survey regarding their eating habits shown below.
+
+**Vegetables** - two or more cups a day  
+**Fruit** - two or more pieces a day  
+**Whole Grains** - two or more whole grains a day  
+**Wine** - half to one drink a day  
+**Fish** - two or more times a week  
+**Legumes/Beans** - two or more servings a week  
+**Nuts/Seeds** - handful of nuts most days  
+**Fat** - lots of olive oil/ few other fats  
+**Red/Processed Meats** - two servings or fewer a week  
+
+A '1' would be assigned if the patient met a requirement and a '0' if they didn't. At the end, their scores would be summed up giving a total out of 9. If the total score for a patient was greater thean 5, we would say they are following the 'Mediterranean Diet'. This is what our binary response variable **Diet** represents. A '1' will represent patients following the diet and a '0' represents those who don't. We will attempt to model Diet using the following variables
+
+
+**BMI** - bodymass index (patients's weight in kilograms/square of height in meters)  
+**a1c** - average blood glucose percentage over past three months  
+**CHOL** - cholesterol levels in mg/dL  
+**age** - patient age in years
+
+
+```{r, warning = FALSE, error = FALSE, message=FALSE}
+library(readxl)
+library(ggpubr)
+library(ggplot2)
+library(bestglm)
+library(ResourceSelection)
+library(InformationValue)
+library(leaps)
+library(rms)
+library(boot)
+
+Diet <- read_excel("C:/Users/micha/OneDrive/Documents/2018-2019/Regression/Diet.xlsx")
+```
+
+Looking at the boxplots for age and BMI, there seems to be slight evidence of seperation between those following the diet and those who don't. The other two variables seem to have less predictive power due to a lack of seperation. BMI certainly makes sense as a predictor since it is an measure of whether a person is underweight or overweight. As such those who follow the Mediterranean Diet would logically have a lower BMI than those who don't. We wll run best subsets to check which variables to include in our model.  
+
+```{r}
+ggboxplot(Diet, x = "Diet", y = "BMI")+
+  theme_bw()
+```
+
+
+```{r}
+ggboxplot(Diet, x = "Diet", y = "a1c")+
+  theme_bw()
+```
+
+```{r}
+ggboxplot(Diet, x = "Diet", y = "CHOL")+
+  theme_bw()
+```
+
+```{r}
+ggboxplot(Diet, x = "Diet", y = "age")+
+  theme_bw()
+```
+
+Using best subsets, we see that the model with the lowest AIC is the two predictor model using age and BMI.  
+
+```{r}
+best <- bestglm(data.frame(cbind(Diet$BMI, Diet$a1c, Diet$CHOL, Diet$age),Diet$Diet), IC="AIC")
+best$Subsets
+```
+
+Our two predictors are moderatly statistically significant with somewhat low p-values. The Hosmer Lemeshow test has a high p-value indicating our model fits the data fairly well. The Somers' D of the model is somewhat close to zero though (.3011)  suggesting our model has somewhat poor seperation. From the coefficients, we can determine each one-point increase in BMI is associated with an estimated 6.4%, exp(-.0553) = 0.9366833, decrease in the relative odds a patient is following the Mediterranean Diet given age is held constant. The formula for our model is:
+
+P(Diet) = exp(-0.02985 - 0.06531 BMI + .02912 age)/(1 + exp(-0.02985 - 0.06531 BMI + .02912 age))
+
+
+```{r}
+model1 <- glm(Diet ~ BMI + age, family=binomial, maxit=500, data=Diet)
+summary(model1)
+```
+
+
+```{r}
+model1_lrm <- lrm(Diet ~ age + BMI, x=T, y=T, data = Diet)
+residuals(model1_lrm, type="gof")
+```
+
+
+```{r}
+hoslem.test(Diet$Diet, model1$fitted.values)
+```
+
+
+```{r}
+#Dxy represents Somers' D in R
+model1_lrm$stats[7]
+```
+
+
+Judging from the standardized pearson residuals, there doesn't seem to be any extreme outliers we need to be concerned about. 
+
+```{r}
+diag <- glm.diag(model1)
+pearson <- residuals(model1, type="pearson")/sqrt(1-diag$h)
+model1diag <- cbind(pearson, glm.diag(model1)$cook, glm.diag(model1)$h)
+colnames(model1diag) <- c("pearson", "cook", "h")
+print(model1diag)
+```
+
+
+```{r}
+ggplot() + 
+  geom_point(aes(x=model1$fitted.values, y= pearson), color = "#00AFBB", size = 1) +
+  geom_hline(yintercept = 0, linetype= "dashed", color="red", size = 1) +
+  xlab("Estimated Probabilities") + ylab("Standardized Pearson Residuals") +
+  theme_bw()
+
+```
+
+Since the analysis we are performing is a retrospective study, it seems reasonible to use a cutoff of 50% when creating a classification table. This makes sense since the dataset being used contains 50 patients who are following the diet and 51 who aren't. Since NYU Langone has a lot of data, I was able to grab 87 new observations to test our model wtih. Calculating Cpro suggests that our model needs to accurately classify more than 49.94% to be better than random chance. Our model, when applied to the new dataset was able to classify 57.47% correctly indicating that the it's is somewhat uselful. 
+```{r}
+predictDiet <- model1$fitted.values > .5
+table(Diet$Diet, predictDiet)
+
+```
+
+
+```{r}
+Cpro <- ((28+23)/101)*((28+17)/101) + ((17+33)/101)*((23+33)/101)
+Cpro
+```
+
+```{r}
+Diet2 <- read_excel("C:/Users/micha/OneDrive/Documents/2018-2019/Regression/Diet.xlsx", sheet = 2)
+newpredict <- predict(model1, Diet2, type="response")
+predictDiet2 <- newpredict > .5
+table(Diet2$Diet, predictDiet2)
+```
+
+```{r}
+(25+25)/87
+```
+
+
+
+In order to calculate probability estimates, I will assume that the base rate for people following the Mediterranean Diet is 40%. This rate is just a estimate based off what I felt would be reasonable considering the requirements necessary to follow the Diet. Using this rate, we are able to calculate the estimated probabilites each patient is following the diet. 
+
+```{r}
+prosplogit <- predict(model1) + log((.4*51)/(.6*50))
+prospprob <- exp(prosplogit)/(1 + exp(prosplogit))
+cbind(prospprob)
+
+```
+
+
+
